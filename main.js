@@ -1,220 +1,205 @@
-const axios = require("axios");
 const Excel = require("exceljs");
 const ifsc = require("ifsc");
 const readline = require("readline");
-const express = require("express");
-const fs = require("fs");
-const path = require("path");
+const axios = require("axios");
 
-// Initialize web server
-const app = express();
-app.use(express.json());
-const PORT = process.env.PORT || 3000; // Detect the port dynamically
-
-// File setup
-const outputFilePath = path.join(__dirname, "output.xlsx");
-const excelFilePath = path.join(__dirname, "sample.xlsx");
-
-// Initialize Excel workbook and worksheet for IFSC details
 const workbook = new Excel.Workbook();
-const worksheet = workbook.addWorksheet("IFSC Details");
+const bank_list = {}; // Stores valid bank details by IFSC code
+const valid_list = {}; // Stores validation results for IFSC codes
 
-// Add header to the worksheet
-worksheet.columns = [
-  { header: "IFSC", key: "ifsc", width: 20 },
-  { header: "BANK", key: "bank", width: 30 },
-  { header: "BRANCH", key: "branch", width: 30 },
-  { header: "STATUS", key: "status", width: 10 },
-];
-
-// Function to write IFSC details to Excel
-async function writeToExcel(data) {
-  worksheet.addRow(data);
-  await workbook.xlsx.writeFile(outputFilePath);
-  console.log(
-    `Added to Excel: ${data.ifsc}, ${data.bank}, ${data.branch}, ${data.status}`
-  );
-}
-
-// Function to process an individual IFSC code
-async function processIFSC(ifscCode) {
-  const isValid = ifsc.validate(ifscCode);
-  if (isValid) {
-    const details = await ifsc.fetchDetails(ifscCode);
-    const result = {
-      ifsc: ifscCode,
-      bank: details.BANK,
-      branch: details.BRANCH,
-      status: "VALID",
-    };
-    await writeToExcel(result); // Write to Excel
-    return result;
-  } else {
-    const result = {
-      ifsc: ifscCode,
-      bank: null,
-      branch: null,
-      status: "INVALID",
-    };
-    await writeToExcel(result); // Write to Excel
-    return result;
-  }
-}
-
-// Function to process the sample.xlsx file and append data to Excel
-async function processExcel() {
-  const excelWorkbook = new Excel.Workbook();
-  await excelWorkbook.xlsx.readFile(excelFilePath);
-  const worksheet = excelWorkbook.getWorksheet(1);
-  const total = worksheet.rowCount;
-  let count = 0;
-
-  for (let i = 1; i <= total; i++) {
-    const row = worksheet.getRow(i);
-    const code = row.getCell(1).value;
-
-    const isValid = ifsc.validate(code);
-    if (isValid) {
-      const details = await ifsc.fetchDetails(code);
-      const result = {
-        ifsc: code,
-        bank: details.BANK,
-        branch: details.BRANCH,
-        status: "VALID",
-      };
-      await writeToExcel(result); // Write to Excel
-    } else {
-      const result = {
-        ifsc: code,
-        bank: null,
-        branch: null,
-        status: "INVALID",
-      };
-      await writeToExcel(result); // Write to Excel
-    }
-    count++;
-    if (count % 20 === 0) {
-      console.clear();
-      console.log(
-        `Processed ${count} out of ${total} rows from the Excel file.`
-      );
-    }
-  }
-
-  console.log("Excel file processing complete.");
-}
-
-// Initialize console input
-const rl = readline.createInterface({
-  input: process.stdin,
-  output: process.stdout,
-  terminal: true,
-});
-
-// Function to get bank details by region
-async function getBanksByRegion(region) {
-  const excelWorkbook = new Excel.Workbook();
-  const worksheet = excelWorkbook.addWorksheet("Region Banks");
-  worksheet.columns = [
-    { header: "IFSC", key: "ifsc", width: 20 },
-    { header: "BANK", key: "bank", width: 30 },
-    { header: "BRANCH", key: "branch", width: 30 },
-  ];
-
+// Function to process the Excel file
+async function processExcelFile() {
   try {
-    // Make an API call to fetch banks by region (using BankCode API)
-    const response = await axios.get(
-      `https://www.bankcode.in/api/banks?state=${region}`
-    );
+    console.log("Reading Excel file...");
+    await workbook.xlsx.readFile("sample.xlsx");
+    const worksheet = workbook.getWorksheet(1);
+    const total = worksheet.rowCount;
+    let count = 0,
+      valid = 0,
+      bar = "█";
 
-    // Log the raw API response to debug
-    console.log("Raw API Response:", response.data);
+    for (let i = 1; i <= total; i++) {
+      const row = worksheet.getRow(i);
+      const code = row.getCell(1).value;
 
-    const banks = response.data;
-    if (banks.length === 0) {
-      console.log(`No banks found for region: ${region}`);
-    } else {
-      // Filter banks based on region (case-insensitive)
-      banks.forEach((bank) => {
-        if (bank.branch.toLowerCase().includes(region.toLowerCase())) {
-          worksheet.addRow({
-            ifsc: bank.ifsc,
-            bank: bank.bank,
-            branch: bank.branch,
-          });
-        }
-      });
+      if (!(code in valid_list)) valid_list[code] = ifsc.validate(code);
 
-      // Save the region-specific bank details in a new Excel file
-      await excelWorkbook.xlsx.writeFile("region_output.xlsx");
-      console.log(
-        "Region-specific bank details have been saved to region_output.xlsx"
-      );
+      if (valid_list[code]) {
+        if (!(code in bank_list))
+          bank_list[code] = await ifsc.fetchDetails(code);
 
-      // Also log the results to the console
-      console.log(`Banks in ${region}:`);
-      banks.forEach((bank) => {
-        if (bank.branch.toLowerCase().includes(region.toLowerCase())) {
-          console.log(
-            `IFSC: ${bank.ifsc}, Bank: ${bank.bank}, Branch: ${bank.branch}`
-          );
-        }
-      });
+        const details = bank_list[code];
+        row.getCell(2).value = details.BANK;
+        row.getCell(3).value = details.BRANCH;
+        valid++;
+      } else {
+        row.getCell(2).value = "Invalid IFSC";
+        row.getCell(2).fill = {
+          type: "pattern",
+          pattern: "solid",
+          fgColor: { argb: "FF0000" },
+        };
+      }
+      count++;
+      if (count % 20 === 0) bar += "█";
+      console.clear();
+      console.log(`\n${bar} \nProcessed ${count} out of ${total}`);
     }
+
+    console.log(`\nValid: ${valid}\nInvalid: ${total - valid}`);
+    console.log("\nProcessing completed. Writing results to output file...");
+
+    await workbook.xlsx.writeFile("output.xlsx");
+    console.log("File saved as output.xlsx.");
+
+    promptUserOptions();
   } catch (error) {
-    console.error("Error fetching bank data:", error);
+    console.error("Error processing the Excel file:", error.message);
   }
 }
 
-// Console input handler
-function promptUser() {
+// Function to create a new readline interface
+function createReadline() {
+  return readline.createInterface({
+    input: process.stdin,
+    output: process.stdout,
+  });
+}
+
+// Function to prompt the user for options
+function promptUserOptions() {
+  const rl = createReadline();
+
+  console.log("\nSelect an option:");
+  console.log("1. Manually enter an IFSC code and add details to output.xlsx");
+  console.log("2. Enter region name to fetch bank details");
+  console.log("3. View history from output.xlsx");
+
+  rl.question("Enter your choice (1/2/3): ", async (choice) => {
+    rl.close(); // Close readline interface immediately
+    switch (choice) {
+      case "1":
+        await manuallyEnterIFSC();
+        break;
+      case "2":
+        promptRegionInput();
+        break;
+      case "3":
+        await viewHistoryFromExcel();
+        break;
+      default:
+        console.log("Invalid choice. Please try again.");
+        promptUserOptions();
+        break;
+    }
+  });
+}
+
+// Function to manually enter an IFSC code
+async function manuallyEnterIFSC() {
+  const rl = createReadline();
+
+  rl.question("\nEnter the IFSC code to validate: ", async (code) => {
+    rl.close();
+
+    if (!ifsc.validate(code)) {
+      console.log("Invalid IFSC code.");
+      promptUserOptions();
+      return;
+    }
+
+    try {
+      const details = await ifsc.fetchDetails(code);
+      const worksheet = workbook.getWorksheet(1);
+      const lastRow = worksheet.lastRow.number + 1;
+      const newRow = worksheet.getRow(lastRow);
+
+      newRow.getCell(1).value = code;
+      newRow.getCell(2).value = details.BANK;
+      newRow.getCell(3).value = details.BRANCH;
+      await workbook.xlsx.writeFile("output.xlsx");
+
+      console.log("IFSC details added to output.xlsx.");
+    } catch (error) {
+      console.error("Error fetching details for the IFSC code:", error.message);
+    }
+    promptUserOptions();
+  });
+}
+
+// Function to prompt for region input
+function promptRegionInput() {
+  const rl = createReadline();
+
   rl.question(
-    "Enter an IFSC code or type 'region' to get banks by region (or type 'exit' to quit): ",
-    async (input) => {
-      if (input.toLowerCase() === "exit") {
-        rl.close();
-        console.log("Exiting program...");
-        process.exit(0);
-      } else if (input.toLowerCase() === "region") {
-        rl.question("Enter the region: ", async (region) => {
-          await getBanksByRegion(region);
-          promptUser(); // Keep prompting for input
-        });
+    "\nEnter the region name (state) to fetch bank details: ",
+    async (regionName) => {
+      rl.close();
+
+      if (!regionName || regionName.trim() === "") {
+        console.log("No region provided. Please try again.");
+        promptRegionInput();
       } else {
-        await processIFSC(input); // Process IFSC code
-        promptUser(); // Keep prompting for input
+        await getBanksByLocation(regionName.trim().toLowerCase());
+        promptUserOptions();
       }
     }
   );
 }
 
-// Web API endpoint for IFSC validation
-app.post("/validate", async (req, res) => {
-  const { ifsc: ifscCode } = req.body;
-  if (!ifscCode) {
-    return res.status(400).json({ error: "IFSC code is required" });
-  }
+// Function to fetch bank details by location
+async function getBanksByLocation(location) {
+  const url = `https://nominatim.openstreetmap.org/search?q=bank+in+${encodeURIComponent(
+    location
+  )}&format=json&addressdetails=1`;
+
   try {
-    const result = await processIFSC(ifscCode);
-    res.status(200).json(result);
+    console.log(`Fetching bank details for ${location}...`);
+    const response = await axios.get(url);
+    const results = response.data;
+
+    if (results && results.length > 0) {
+      console.log(`\nBanks in ${location}:`);
+      results.forEach((place) => {
+        const bankName = place.display_name;
+        const address = place.address
+          ? `${place.address.road || ""}, ${place.address.city || ""}, ${
+              place.address.state || ""
+            }, ${place.address.country || ""}`
+          : "Address not available";
+
+        console.log(`\nName: ${bankName}`);
+        console.log(`Address: ${address}`);
+        console.log("----------------------");
+      });
+    } else {
+      console.log(`No banks found for ${location}.`);
+    }
   } catch (error) {
-    res
-      .status(500)
-      .json({ error: "Internal server error", details: error.message });
+    console.error("Error fetching bank details:", error.message);
   }
-});
+}
 
-// Start web server
-app.listen(PORT, () => {
-  console.log(`Web server running at http://localhost:${PORT}`); // Logs the dynamically detected port
-  console.log("You can use POST /validate to submit IFSC codes.");
-});
+// Function to view history from output.xlsx
+async function viewHistoryFromExcel() {
+  try {
+    const workbook = new Excel.Workbook();
+    await workbook.xlsx.readFile("output.xlsx");
+    const worksheet = workbook.getWorksheet(1);
 
-// Start Excel file processing and console input
-console.log("Processing the Excel file...");
-processExcel().then(() => {
-  console.log(
-    "You can enter IFSC codes or a region via the console or use the web API."
-  );
-  promptUser();
-});
+    console.log("\nIFSC Code History:");
+    worksheet.eachRow((row, rowNumber) => {
+      console.log(
+        `Row ${rowNumber}: IFSC=${row.getCell(1).value}, Bank=${
+          row.getCell(2).value
+        }, Branch=${row.getCell(3).value}`
+      );
+    });
+  } catch (error) {
+    console.error("Error reading history from output.xlsx:", error.message);
+  }
+  promptUserOptions();
+}
+
+// Start the process
+processExcelFile();
